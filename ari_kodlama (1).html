@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arı ile Bedenle Kodlama</title>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js" crossorigin="anonymous"></script>
+<style>
+  :root { --cell: min(92px, 17vw); --bg:#fdf6e3; --ink:#3b3b3b; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: "Segoe UI", system-ui, sans-serif; background:var(--bg); color:var(--ink);
+         display:flex; flex-direction:column; align-items:center; min-height:100vh; padding:12px; }
+  h1 { margin:4px 0 10px; font-size:26px; }
+  .top { display:flex; gap:24px; flex-wrap:wrap; justify-content:center; }
+  .cam { position:relative; width:min(460px,100%); aspect-ratio:4/3; border-radius:16px; overflow:hidden; background:#222; }
+  .cam video, .cam canvas { position:absolute; inset:0; width:100%; height:100%; transform:scaleX(-1); object-fit:cover; }
+  #ring { position:absolute; left:12px; top:12px; width:84px; height:84px; border-radius:50%; display:none;
+          background:conic-gradient(#2ecc71 calc(var(--p,0)*1turn), #e6e6e6 0); align-items:center; justify-content:center; }
+  #ring span { width:68px; height:68px; border-radius:50%; background:#fff; display:flex; align-items:center;
+               justify-content:center; font-size:38px; }
+  #status { position:absolute; left:0; right:0; bottom:0; padding:6px 10px; background:rgba(0,0,0,.6);
+            color:#fff; font-size:14px; }
+  .legend { display:flex; gap:8px; margin-top:10px; justify-content:space-between; }
+  .legend button { flex:1; border:2px solid #ddd; background:#fff; border-radius:12px; padding:6px 0;
+                   font-size:26px; cursor:pointer; }
+  .legend small { display:block; font-size:13px; color:#777; }
+  .board-wrap { position:relative; }
+  #board { position:relative; width:calc(var(--cell)*5); height:calc(var(--cell)*5); border-radius:12px; overflow:hidden;
+           display:grid; grid-template-columns:repeat(5,1fr); box-shadow:0 4px 14px rgba(0,0,0,.15); }
+  .c { display:flex; align-items:center; justify-content:center; font-size:calc(var(--cell)*.5); }
+  .c.a { background:#c8ebc8; } .c.b { background:#d9f6d9; }
+  #bee { position:absolute; width:var(--cell); height:var(--cell); display:flex; align-items:center; justify-content:center;
+         font-size:calc(var(--cell)*.55); transition:left .45s, top .45s; pointer-events:none; }
+  #beeRot { position:absolute; inset:0; transition:transform .35s; }
+  #beeRot i { position:absolute; left:50%; top:3px; transform:translateX(-50%); width:0; height:0;
+              border-left:11px solid transparent; border-right:11px solid transparent; border-bottom:20px solid #ff9800; }
+  #msg { position:absolute; inset:0; display:none; align-items:center; justify-content:center; text-align:center;
+         font-size:clamp(26px,8vw,44px); font-weight:800; background:rgba(255,255,255,.75); border-radius:12px; }
+  .cmds { display:flex; gap:8px; margin-top:14px; flex-wrap:wrap; justify-content:center; max-width:1000px; }
+  .slot { width:min(78px,17vw); aspect-ratio:1; border-radius:12px; background:#fff; border:2px solid #ccc;
+          display:flex; align-items:center; justify-content:center; font-size:42px; }
+  .slot.on { border:5px solid #ff9800; }
+  .tips { margin-top:10px; font-size:13px; color:#777; text-align:center; }
+</style>
+</head>
+<body>
+<h1>🐝 Arı ile Bedenle Kodlama</h1>
+
+<div class="top">
+  <div>
+    <div class="cam">
+      <video id="video" playsinline muted></video>
+      <canvas id="overlay" width="640" height="480"></canvas>
+      <div id="ring"><span id="ringIcon"></span></div>
+      <div id="status">Kamera başlatılıyor…</div>
+    </div>
+    <div class="legend">
+      <button data-c="FWD">1 ☝️<small>ileri</small></button>
+      <button data-c="RIGHT">2 ✌️<small>sağa</small></button>
+      <button data-c="LEFT">3 🤟<small>sola</small></button>
+      <button data-c="RUN">🖐️<small>çalıştır</small></button>
+      <button data-c="UNDO">✊<small>sil</small></button>
+    </div>
+  </div>
+
+  <div class="board-wrap">
+    <div id="board"></div>
+    <div id="msg"></div>
+  </div>
+</div>
+
+<div class="cmds" id="cmds"></div>
+<div class="tips">Öğretmen tuşları: N sonraki seviye · R baştan · F tam ekran &nbsp;|&nbsp; Klavye denemesi: 1 2 3 · Enter = çalıştır · Backspace = sil</div>
+
+<script>
+// ---------------------------------------------------------------- ayarlar
+const HOLD_MS = 1100, STEP_MS = 750, MAX_CMDS = 10;
+const ICON = { FWD:"⬆️", RIGHT:"↪️", LEFT:"↩️", RUN:"▶️", UNDO:"❌" };
+const DIRS = [[0,-1],[1,0],[0,1],[-1,0]];
+const LEVELS = [
+  { start:[0,4], dir:0, flower:[0,1], rocks:[] },
+  { start:[0,4], dir:0, flower:[2,2], rocks:[] },
+  { start:[0,4], dir:0, flower:[4,1], rocks:[[0,2],[1,2],[1,1]] },
+];
+const CONN = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],
+              [9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
+
+// ---------------------------------------------------------------- ses
+let actx = null;
+function beep(freq=660, dur=0.12) {
+  try {
+    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.frequency.value = freq; g.gain.value = 0.15;
+    o.connect(g); g.connect(actx.destination); o.start(); o.stop(actx.currentTime + dur);
+  } catch (e) {}
+}
+
+// ---------------------------------------------------------------- oyun
+const $ = id => document.getElementById(id);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const G = { li:0, cmds:[], mode:"edit", idx:-1, pos:[0,4], dir:0, ang:0, token:0 };
+const lvl = () => LEVELS[G.li % LEVELS.length];
+const cell = () => $("board").clientWidth / 5;
+
+function buildBoard() {
+  const b = $("board"); b.innerHTML = "";
+  const L = lvl();
+  for (let r = 0; r < 5; r++) for (let c = 0; c < 5; c++) {
+    const d = document.createElement("div");
+    d.className = "c " + ((r + c) % 2 ? "b" : "a");
+    if (L.rocks.some(k => k[0] === c && k[1] === r)) d.textContent = "🪨";
+    if (L.flower[0] === c && L.flower[1] === r) d.textContent = "🌸";
+    b.appendChild(d);
+  }
+  const bee = document.createElement("div");
+  bee.id = "bee";
+  bee.innerHTML = '<div id="beeRot"><i></i></div>🐝';
+  b.appendChild(bee);
+  renderBee(true);
+}
+function renderBee(instant) {
+  const bee = $("bee"), cs = cell();
+  if (instant) bee.style.transition = "none";
+  bee.style.left = G.pos[0] * cs + "px";
+  bee.style.top = G.pos[1] * cs + "px";
+  $("beeRot").style.transform = `rotate(${G.ang}deg)`;
+  if (instant) { bee.offsetHeight; bee.style.transition = ""; }
+}
+function renderCmds() {
+  const box = $("cmds"); box.innerHTML = "";
+  for (let i = 0; i < MAX_CMDS; i++) {
+    const s = document.createElement("div");
+    s.className = "slot" + (i === G.idx ? " on" : "");
+    if (i < G.cmds.length) s.textContent = ICON[G.cmds[i]];
+    box.appendChild(s);
+  }
+}
+function resetLevel() {
+  G.token++; const L = lvl();
+  G.cmds = []; G.mode = "edit"; G.idx = -1;
+  G.pos = [...L.start]; G.dir = L.dir; G.ang = L.dir * 90;
+  $("msg").style.display = "none";
+  buildBoard(); renderCmds();
+}
+function exec(cmd) {
+  if (cmd === "RIGHT") { G.dir = (G.dir + 1) % 4; G.ang += 90; }
+  else if (cmd === "LEFT") { G.dir = (G.dir + 3) % 4; G.ang -= 90; }
+  else if (cmd === "FWD") {
+    const [dx, dy] = DIRS[G.dir], nc = G.pos[0] + dx, nr = G.pos[1] + dy;
+    const inside = nc >= 0 && nc < 5 && nr >= 0 && nr < 5;
+    const rock = lvl().rocks.some(k => k[0] === nc && k[1] === nr);
+    if (inside && !rock) G.pos = [nc, nr];
+  }
+}
+function showMsg(t) { const m = $("msg"); m.textContent = t; m.style.display = "flex"; }
+
+async function run() {
+  if (G.mode !== "edit" || !G.cmds.length) return;
+  const tok = ++G.token, L = lvl();
+  G.mode = "run";
+  G.pos = [...L.start]; G.dir = L.dir; G.ang = L.dir * 90; renderBee(true);
+  await sleep(400);
+  for (let i = 0; i < G.cmds.length; i++) {
+    if (tok !== G.token) return;
+    G.idx = i; renderCmds(); exec(G.cmds[i]); renderBee(false); beep(500 + i * 40, 0.1);
+    await sleep(STEP_MS);
+  }
+  if (tok !== G.token) return;
+  G.idx = -1; renderCmds();
+  if (G.pos[0] === L.flower[0] && G.pos[1] === L.flower[1]) {
+    G.mode = "win"; showMsg("BRAVO! 🎉");
+    [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => beep(f, 0.18), i * 140));
+    await sleep(3500);
+    if (tok !== G.token) return;
+    G.li++; resetLevel();
+  } else {
+    G.mode = "fail"; showMsg("Tekrar dene 🙂"); beep(220, 0.3);
+    await sleep(1500);
+    if (tok !== G.token) return;
+    $("msg").style.display = "none";
+    G.pos = [...L.start]; G.dir = L.dir; G.ang = L.dir * 90; renderBee(true);
+    G.mode = "edit";
+  }
+}
+function addCmd(cmd) {
+  if (G.mode !== "edit") return;
+  if (cmd === "UNDO") { G.cmds.pop(); beep(300, 0.08); }
+  else if (cmd === "RUN") { run(); return; }
+  else if (G.cmds.length < MAX_CMDS) { G.cmds.push(cmd); beep(660, 0.1); }
+  renderCmds();
+}
+
+// ---------------------------------------------------------------- el hareketi
+const d2 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+function classify(lm) {
+  let n = 0;
+  for (const [tip, pip] of [[8,6],[12,10],[16,14],[20,18]])
+    if (d2(lm[0], lm[tip]) > d2(lm[0], lm[pip]) * 1.05) n++;
+  return ["UNDO", "FWD", "RIGHT", "LEFT"][n] || "RUN";
+}
+
+let cur = null, since = 0, locked = null;
+const ring = $("ring"), ringIcon = $("ringIcon"), ctx = $("overlay").getContext("2d");
+
+function onResults(res) {
+  ctx.clearRect(0, 0, 640, 480);
+  const lm = res.multiHandLandmarks && res.multiHandLandmarks[0];
+  const now = performance.now();
+  let progress = 0, g = null;
+  if (lm) {
+    g = classify(lm);
+    ctx.strokeStyle = "#00e5ff"; ctx.lineWidth = 3;
+    for (const [a, b] of CONN) {
+      ctx.beginPath(); ctx.moveTo(lm[a].x * 640, lm[a].y * 480); ctx.lineTo(lm[b].x * 640, lm[b].y * 480); ctx.stroke();
+    }
+    ctx.fillStyle = "#ff4081";
+    for (const p of lm) { ctx.beginPath(); ctx.arc(p.x * 640, p.y * 480, 4, 0, 7); ctx.fill(); }
+  }
+  if (!g) { cur = locked = null; }
+  else {
+    if (g !== cur) { cur = g; since = now; }
+    if (g !== locked) {
+      locked = null;
+      progress = (now - since) / HOLD_MS;
+      if (progress >= 1 && G.mode === "edit") { addCmd(g); locked = g; progress = 0; }
+    }
+  }
+  if (g && progress > 0) {
+    ring.style.display = "flex"; ring.style.setProperty("--p", Math.min(progress, 1)); ringIcon.textContent = ICON[g];
+  } else ring.style.display = "none";
+}
+
+// ---------------------------------------------------------------- kamera
+async function startCamera() {
+  const status = $("status"), video = $("video");
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: "user" }, audio: false });
+    video.srcObject = stream; await video.play();
+  } catch (e) {
+    status.textContent = "Kamera açılamadı. İzin verin ya da sayfayı http://localhost üzerinden açın. (Klavye/butonlar çalışır.)";
+    return;
+  }
+  if (typeof Hands === "undefined") { status.textContent = "MediaPipe yüklenemedi (internet gerekli)."; return; }
+  const hands = new Hands({ locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${f}` });
+  hands.setOptions({ maxNumHands: 1, modelComplexity: 0, minDetectionConfidence: 0.7, minTrackingConfidence: 0.6 });
+  hands.onResults(onResults);
+  status.textContent = "Model yükleniyor…";
+  await hands.initialize();
+  status.textContent = "Elini göster, ~1 saniye sabit tut ✋";
+  setTimeout(() => { status.style.display = "none"; }, 4000);
+  (async function loop() {
+    if (video.readyState >= 2) await hands.send({ image: video });
+    requestAnimationFrame(loop);
+  })();
+}
+
+// ---------------------------------------------------------------- girdiler
+document.querySelectorAll(".legend button").forEach(b => b.addEventListener("click", () => addCmd(b.dataset.c)));
+document.addEventListener("keydown", e => {
+  const k = e.key.toLowerCase();
+  if (k === "n") { G.li++; resetLevel(); }
+  else if (k === "r") resetLevel();
+  else if (k === "f") document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+  else if (k === "1") addCmd("FWD");
+  else if (k === "2") addCmd("RIGHT");
+  else if (k === "3") addCmd("LEFT");
+  else if (k === "enter") addCmd("RUN");
+  else if (k === "backspace") addCmd("UNDO");
+});
+
+window.addEventListener('resize', () => renderBee(true));
+resetLevel();
+startCamera();
+</script>
+</body>
+</html>
